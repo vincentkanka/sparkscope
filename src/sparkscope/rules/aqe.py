@@ -1,11 +1,34 @@
+
 from sparkscope.models import Finding
 
 
 def check_aqe_enabled(config: dict[str, str]) -> list[Finding]:
-    value = config.get("spark.sql.adaptive.enabled", "").lower()
+    raw_value = config.get("spark.sql.adaptive.enabled")
+
+    # Missing configuration does not prove AQE is disabled.
+    if raw_value is None:
+        return []
+
+    value = str(raw_value).strip().lower()
 
     if value == "true":
         return []
+
+    if value not in {"true", "false"}:
+        return [
+            Finding(
+                rule_id="AQE_INVALID",
+                severity="HIGH",
+                title="Invalid AQE configuration",
+                description=(
+                    f"spark.sql.adaptive.enabled has an invalid value: "
+                    f"{raw_value!r}."
+                ),
+                recommendation=(
+                    "Set spark.sql.adaptive.enabled to true or false."
+                ),
+            )
+        ]
 
     return [
         Finding(
@@ -13,12 +36,12 @@ def check_aqe_enabled(config: dict[str, str]) -> list[Finding]:
             severity="HIGH",
             title="Adaptive Query Execution is disabled",
             description=(
-                "Adaptive Query Execution can improve Spark SQL workloads by "
-                "dynamically optimizing shuffle partitions, skew joins, and join strategies."
+                "AQE is explicitly disabled. This can prevent "
+                "runtime optimization of certain Spark SQL operations."
             ),
             recommendation=(
-                "Enable spark.sql.adaptive.enabled for supported Spark SQL workloads "
-                "and validate performance with representative data."
+                "Evaluate enabling spark.sql.adaptive.enabled and "
+                "benchmark representative workloads."
             ),
         )
     ]

@@ -12,7 +12,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0"
+    "pytest>=8.0.0",
+    "build>=1.2.0",
+    "twine>=5.0.0"
 ]
 
 [project.scripts]
@@ -28,3 +30,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[project.urls]
+Homepage = "https://github.com/vincentkanka/sparkscope"
+Repository = "https://github.com/vincentkanka/sparkscope"
+Issues = "https://github.com/vincentkanka/sparkscope/issues"

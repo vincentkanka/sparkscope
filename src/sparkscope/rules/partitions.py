@@ -6,32 +6,27 @@ def check_shuffle_partitions(config: dict[str, str]) -> list[Finding]:
     raw_value = config.get("spark.sql.shuffle.partitions")
 
     if raw_value is None:
-        return [
-            Finding(
-                rule_id="SHUFFLE_PARTITIONS_DEFAULT",
-                severity="LOW",
-                title="Shuffle partitions setting is not explicitly configured",
-                description=(
-                    "Spark defaults spark.sql.shuffle.partitions to 200. "
-                    "This may be too high for small workloads or too low for large workloads."
-                ),
-                recommendation=(
-                    "Set spark.sql.shuffle.partitions based on shuffle data size, cluster resources, "
-                    "and target partition size."
-                ),
-            )
-        ]
+        return []
 
     try:
         partitions = int(raw_value)
-    except ValueError:
+    except (ValueError, TypeError):
+        partitions = 0
+
+    if partitions <= 0:
         return [
             Finding(
                 rule_id="SHUFFLE_PARTITIONS_INVALID",
-                severity="MEDIUM",
-                title="Shuffle partitions setting is invalid",
-                description="spark.sql.shuffle.partitions should be an integer value.",
-                recommendation="Set spark.sql.shuffle.partitions to a valid integer.",
+                severity="HIGH",
+                title="Invalid shuffle partition count",
+                description=(
+                    "spark.sql.shuffle.partitions must be "
+                    "a positive integer."
+                ),
+                recommendation=(
+                    "Set a positive shuffle partition count, "
+                    "then benchmark with representative workloads."
+                ),
             )
         ]
 
@@ -42,12 +37,13 @@ def check_shuffle_partitions(config: dict[str, str]) -> list[Finding]:
                 severity="MEDIUM",
                 title="Shuffle partition count may be excessive",
                 description=(
-                    f"spark.sql.shuffle.partitions is set to {partitions}. "
-                    "Excessive partition counts can increase scheduling overhead and create many small tasks."
+                    f"Configured shuffle partitions: {partitions}. "
+                    "Depending on shuffle size, this may increase "
+                    "scheduling overhead and small-task counts."
                 ),
                 recommendation=(
-                    "Review shuffle volume and target partition size. Consider reducing partition count "
-                    "or enabling Adaptive Query Execution."
+                    "Review shuffle volume, AQE behavior, task metrics, "
+                    "and partition sizes before changing this setting."
                 ),
             )
         ]
@@ -59,12 +55,12 @@ def check_shuffle_partitions(config: dict[str, str]) -> list[Finding]:
                 severity="MEDIUM",
                 title="Shuffle partition count may be too low",
                 description=(
-                    f"spark.sql.shuffle.partitions is set to {partitions}. "
-                    "Too few partitions may reduce parallelism and create large shuffle tasks."
+                    f"Configured shuffle partitions: {partitions}. "
+                    "This may limit parallelism for some workloads."
                 ),
                 recommendation=(
-                    "Increase shuffle partitions based on cluster size, shuffle volume, "
-                    "and target task duration."
+                    "Evaluate partition counts against actual shuffle "
+                    "volume and cluster resources."
                 ),
             )
         ]
