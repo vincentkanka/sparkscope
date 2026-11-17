@@ -17,6 +17,10 @@ dev = [
     "twine>=5.0.0"
 ]
 
+spark = [
+    "pyspark>=3.5,<5"
+]
+
 [project.scripts]
 sparkscope = "sparkscope.cli:main"
 
