@@ -1,6 +1,6 @@
 [project]
 name = "sparkscope"
-version = "0.2.0"
+version = "0.3.0"
 description = "Open-source PySpark performance analysis toolkit"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,6 @@ dev = [
     "build>=1.2.0",
     "twine>=5.0.0"
 ]
-
 spark = [
     "pyspark>=3.5,<5"
 ]
@@ -34,6 +33,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring a real local SparkSession"
+]
 
 [project.urls]
 Homepage = "https://github.com/vincentkanka/sparkscope"
