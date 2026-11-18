@@ -1,102 +1,142 @@
+
 from sparkscope.models import Finding, WorkloadMetadata
 
 
 BROADCAST_SIZE_THRESHOLD_MB = 100
 LARGE_TABLE_SIZE_THRESHOLD_MB = 1000
 
+JOIN_TYPE_ALIASES = {
+    "inner": "inner",
+    "left": "left_outer",
+    "left_outer": "left_outer",
+    "leftouter": "left_outer",
+    "right": "right_outer",
+    "right_outer": "right_outer",
+    "rightouter": "right_outer",
+    "full": "full_outer",
+    "outer": "full_outer",
+    "full_outer": "full_outer",
+    "fullouter": "full_outer",
+    "left_semi": "left_semi",
+    "leftsemi": "left_semi",
+    "semi": "left_semi",
+    "left_anti": "left_anti",
+    "leftanti": "left_anti",
+    "anti": "left_anti",
+}
 
-def check_broadcast_join_opportunities(workload: WorkloadMetadata) -> list[Finding]:
-    findings: list[Finding] = []
-    tables_by_name = {table.name: table for table in workload.tables}
+ALLOWED_BROADCAST_SIDES = {
+    "inner": {"left", "right"},
+    "left_outer": {"right"},
+    "right_outer": {"left"},
+    "left_semi": {"right"},
+    "left_anti": {"right"},
+}
+
+
+def check_broadcast_join_opportunities(
+    workload: WorkloadMetadata,
+) -> list[Finding]:
+    findings = []
+    tables = {table.name: table for table in workload.tables}
 
     for join in workload.joins:
-        left_table = tables_by_name.get(join.left_table)
-        right_table = tables_by_name.get(join.right_table)
+        left = tables.get(join.left_table)
+        right = tables.get(join.right_table)
 
-        if left_table is None or right_table is None:
+        if left is None or right is None:
             continue
 
-        if (
-            left_table.size_mb >= LARGE_TABLE_SIZE_THRESHOLD_MB
-            and right_table.size_mb <= BROADCAST_SIZE_THRESHOLD_MB
-        ):
-            findings.append(
-                Finding(
-                    rule_id="BROADCAST_JOIN_OPPORTUNITY",
-                    severity="MEDIUM",
-                    title="Broadcast join opportunity detected",
-                    description=(
-                        f"The table {right_table.name} is {right_table.size_mb:.1f} MB "
-                        f"and is joined with larger table {left_table.name} "
-                        f"({left_table.size_mb:.1f} MB)."
-                    ),
-                    recommendation=(
-                        f"Evaluate broadcasting {right_table.name} to reduce shuffle during the join. "
-                        "Validate with Spark UI metrics and workload testing."
-                    ),
-                )
-            )
+        join_type = JOIN_TYPE_ALIASES.get(
+            join.join_type.strip().lower().replace(" ", "_")
+        )
 
-        elif (
-            right_table.size_mb >= LARGE_TABLE_SIZE_THRESHOLD_MB
-            and left_table.size_mb <= BROADCAST_SIZE_THRESHOLD_MB
-        ):
+        if join_type not in ALLOWED_BROADCAST_SIDES:
+            continue
+
+        # Without equi-join keys, we cannot suggest
+        # a broadcast hash join.
+        if not join.join_keys:
+            continue
+
+        candidates = [
+            ("left", left, right),
+            ("right", right, left),
+        ]
+
+        for side, small, large in candidates:
+            if side not in ALLOWED_BROADCAST_SIDES[join_type]:
+                continue
+
+            if not (
+                0 <= small.size_mb <= BROADCAST_SIZE_THRESHOLD_MB
+                and large.size_mb >= LARGE_TABLE_SIZE_THRESHOLD_MB
+            ):
+                continue
+
             findings.append(
                 Finding(
                     rule_id="BROADCAST_JOIN_OPPORTUNITY",
                     severity="MEDIUM",
                     title="Broadcast join opportunity detected",
                     description=(
-                        f"The table {left_table.name} is {left_table.size_mb:.1f} MB "
-                        f"and is joined with larger table {right_table.name} "
-                        f"({right_table.size_mb:.1f} MB)."
+                        f"Table '{small.name}' ({small.size_mb:.1f} MB) "
+                        f"is joined with '{large.name}' "
+                        f"({large.size_mb:.1f} MB) using "
+                        f"a {join_type} join. Broadcasting the "
+                        f"{side} side may be worth evaluating."
                     ),
                     recommendation=(
-                        f"Evaluate broadcasting {left_table.name} to reduce shuffle during the join. "
-                        "Validate with Spark UI metrics and workload testing."
+                        f"Check whether Spark already broadcasts "
+                        f"'{small.name}'. Review the physical plan, "
+                        f"runtime memory requirements, join-key "
+                        f"statistics, and the configured automatic "
+                        f"broadcast threshold before applying a "
+                        f"broadcast hint. The 100 MB screening limit "
+                        f"is a heuristic, not a safe broadcast size."
                     ),
                 )
             )
 
     return findings
 
-def check_join_key_partition_alignment(workload: WorkloadMetadata) -> list[Finding]:
-    findings: list[Finding] = []
-    tables_by_name = {table.name: table for table in workload.tables}
+
+def check_missing_join_keys(
+    workload: WorkloadMetadata,
+) -> list[Finding]:
+    findings = []
+
+    equi_join_types = {
+        "inner",
+        "left_outer",
+        "right_outer",
+        "full_outer",
+        "left_semi",
+        "left_anti",
+    }
 
     for join in workload.joins:
-        left_table = tables_by_name.get(join.left_table)
-        right_table = tables_by_name.get(join.right_table)
+        join_type = JOIN_TYPE_ALIASES.get(
+            join.join_type.strip().lower().replace(" ", "_")
+        )
 
-        if left_table is None or right_table is None:
-            continue
-
-        for table in [left_table, right_table]:
-            if not table.partition_columns or not join.join_keys:
-                continue
-
-            missing_keys = [
-                join_key
-                for join_key in join.join_keys
-                if join_key not in table.partition_columns
-            ]
-
-            if missing_keys:
-                findings.append(
-                    Finding(
-                        rule_id="JOIN_KEY_PARTITION_MISMATCH",
-                        severity="LOW",
-                        title="Join key does not align with partition columns",
-                        description=(
-                            f"The table {table.name} is partitioned by "
-                            f"{', '.join(table.partition_columns)}, but the join uses "
-                            f"{', '.join(join.join_keys)}."
-                        ),
-                        recommendation=(
-                            "Review whether partitioning supports the most common join and filter patterns. "
-                            "This does not always require changing partitioning, but it may indicate a shuffle risk."
-                        ),
-                    )
+        if join_type in equi_join_types and not join.join_keys:
+            findings.append(
+                Finding(
+                    rule_id="JOIN_KEYS_MISSING",
+                    severity="LOW",
+                    title="Join key metadata is missing",
+                    description=(
+                        f"The join between '{join.left_table}' "
+                        f"and '{join.right_table}' has no join "
+                        f"keys in the supplied metadata."
+                    ),
+                    recommendation=(
+                        "Provide join keys if this is an equi-join. "
+                        "For non-equi joins, inspect the physical "
+                        "execution plan separately."
+                    ),
                 )
+            )
 
     return findings

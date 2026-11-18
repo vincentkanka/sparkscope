@@ -9,14 +9,21 @@ def check_executor_cores(config: dict[str, str]) -> list[Finding]:
 
     try:
         cores = int(raw_value)
-    except ValueError:
+    except (ValueError, TypeError):
+        cores = 0
+
+    if cores <= 0:
         return [
             Finding(
                 rule_id="EXECUTOR_CORES_INVALID",
-                severity="MEDIUM",
-                title="Executor cores setting is invalid",
-                description="spark.executor.cores should be an integer value.",
-                recommendation="Set spark.executor.cores to a valid integer.",
+                severity="HIGH",
+                title="Invalid executor core count",
+                description=(
+                    "spark.executor.cores must be a positive integer."
+                ),
+                recommendation=(
+                    "Configure a positive integer for executor cores."
+                ),
             )
         ]
 
@@ -27,13 +34,14 @@ def check_executor_cores(config: dict[str, str]) -> list[Finding]:
                 severity="MEDIUM",
                 title="Executor core count may be high",
                 description=(
-                    f"spark.executor.cores is set to {cores}. "
-                    "High core counts per executor can increase garbage collection pressure "
-                    "and reduce task isolation."
+                    f"Executor cores is set to {cores}. "
+                    "Higher core counts may increase resource contention "
+                    "for some workloads."
                 ),
                 recommendation=(
-                    "Evaluate using fewer cores per executor, commonly in the 3–5 range, "
-                    "depending on workload, memory, and cluster manager."
+                    "Benchmark different executor sizes and review CPU, "
+                    "memory, garbage collection, and cluster utilization. "
+                    "This is a heuristic, not a universal limit."
                 ),
             )
         ]
@@ -42,22 +50,32 @@ def check_executor_cores(config: dict[str, str]) -> list[Finding]:
 
 
 def check_serializer(config: dict[str, str]) -> list[Finding]:
-    serializer = config.get("spark.serializer", "")
+    serializer = config.get("spark.serializer")
+
+    if serializer is None:
+        return []
+
+    serializer = str(serializer).strip()
 
     if serializer == "org.apache.spark.serializer.KryoSerializer":
+        return []
+
+    if serializer != "org.apache.spark.serializer.JavaSerializer":
         return []
 
     return [
         Finding(
             rule_id="JAVA_SERIALIZER_USED",
-            severity="MEDIUM",
-            title="JavaSerializer may reduce serialization performance",
+            severity="LOW",
+            title="JavaSerializer is configured",
             description=(
-                "The default JavaSerializer can be slower and less compact for some Spark workloads."
+                "Java serialization may have higher overhead than Kryo "
+                "for certain RDD workloads and complex objects."
             ),
             recommendation=(
-                "Evaluate org.apache.spark.serializer.KryoSerializer for workloads with complex objects "
-                "or heavy serialization overhead."
+                "Benchmark KryoSerializer where serialization overhead "
+                "is significant. It may not improve DataFrame or SQL "
+                "workloads that use Spark's internal binary format."
             ),
         )
     ]
