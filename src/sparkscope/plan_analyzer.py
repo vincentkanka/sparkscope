@@ -9,20 +9,36 @@ import re
 from sparkscope.models import Finding
 
 
-KNOWN_OPERATORS = (
-    "SortMergeJoin",
+OPERATORS = (
+    "BroadcastNestedLoopJoin",
     "BroadcastHashJoin",
     "ShuffledHashJoin",
-    "BroadcastNestedLoopJoin",
+    "SortMergeJoin",
     "CartesianProduct",
     "BroadcastExchange",
+    "ReusedExchange",
     "Exchange",
+    "AQEShuffleRead",
+    "BatchEvalPython",
+    "ArrowEvalPython",
 )
 
-OPERATOR_PATTERN = re.compile(
+_OPERATOR_RE = re.compile(
     r"^("
-    + "|".join(KNOWN_OPERATORS)
+    + "|".join(re.escape(name) for name in OPERATORS)
     + r")(?=\s|$|\[|\()"
+)
+
+_AQE_RE = re.compile(r"\bAdaptiveSparkPlan\b")
+
+_FINAL_RE = re.compile(
+    r"\bisFinalPlan=(true|false)\b",
+    re.IGNORECASE,
+)
+
+_TREE_PREFIX_RE = re.compile(
+    r"^(?:(?:\s|\||:|\+|-)*)"
+    r"(?:\*?\(\d+\)\s*)?"
 )
 
 
@@ -31,23 +47,23 @@ class PlanSummary:
     operator_counts: dict[str, int]
     is_adaptive: bool
     plan_source: str = "DataFrame.explain(simple)"
+    is_final_plan: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "operator_counts": dict(self.operator_counts),
             "is_adaptive": self.is_adaptive,
             "plan_source": self.plan_source,
+            "is_final_plan": self.is_final_plan,
         }
 
 
 def collect_physical_plan(dataframe: Any) -> str:
     """
-    Capture DataFrame.explain(mode="simple").
+    Capture the DataFrame's simple physical plan.
 
-    This does not execute DataFrame actions or collect rows.
-    Planning may still access catalog or source metadata.
-
-    Classic PySpark DataFrames are the initial target.
+    Does not trigger DataFrame actions.
+    Planning may access catalog or source metadata.
     """
     if dataframe is None:
         raise ValueError("A DataFrame is required.")
@@ -79,26 +95,20 @@ def collect_physical_plan(dataframe: Any) -> str:
 
 def extract_operator(line: str) -> str | None:
     """
-    Extract an operator name from a Spark plan line.
+    Extract recognized operators from simple plan nodes.
 
-    Ignore tree prefixes and whole-stage codegen markers.
-    Match only at the start of a plan node.
+    Handles tree markers and whole-stage codegen prefixes
+    such as *(2), without matching names in expressions.
     """
-    cleaned = re.sub(r"^[\s|:+\-]*", "", line)
+    if not line.strip():
+        return None
 
-    cleaned = re.sub(
-        r"^\*\(\d+\)\s*",
-        "",
-        cleaned,
-    )
+    if line.lstrip().startswith("=="):
+        return None
 
-    cleaned = re.sub(
-        r"^\(\d+\)\s*",
-        "",
-        cleaned,
-    )
+    cleaned = _TREE_PREFIX_RE.sub("", line, count=1)
 
-    match = OPERATOR_PATTERN.match(cleaned)
+    match = _OPERATOR_RE.match(cleaned)
 
     return match.group(1) if match else None
 
@@ -109,15 +119,27 @@ def summarize_plan(plan: str) -> PlanSummary:
     for line in plan.splitlines():
         operator = extract_operator(line)
 
-        if operator is not None:
+        if operator:
             counts[operator] += 1
+
+    is_adaptive = bool(_AQE_RE.search(plan))
+
+    final_match = (
+        _FINAL_RE.search(plan)
+        if is_adaptive
+        else None
+    )
+
+    is_final = (
+        final_match.group(1).lower() == "true"
+        if final_match
+        else None
+    )
 
     return PlanSummary(
         operator_counts=dict(counts),
-        is_adaptive=any(
-            line.lstrip().startswith("AdaptiveSparkPlan")
-            for line in plan.splitlines()
-        ),
+        is_adaptive=is_adaptive,
+        is_final_plan=is_final,
     )
 
 
@@ -125,10 +147,10 @@ def analyze_physical_plan(
     summary: PlanSummary,
 ) -> list[Finding]:
     """
-    Generate cautious findings from observed plan operators.
+    Generate conservative diagnostic findings.
 
-    These are diagnostic hints, not measured performance
-    problems or guarantees of optimization benefits.
+    Findings identify planned operators, not measured
+    performance problems or guaranteed optimizations.
     """
     counts = summary.operator_counts
     findings: list[Finding] = []
@@ -140,15 +162,12 @@ def analyze_physical_plan(
                 severity="MEDIUM",
                 title="Cartesian product detected in physical plan",
                 description=(
-                    "Spark plans a CartesianProduct operation. "
-                    "This may produce many output rows depending "
-                    "on input cardinalities."
+                    "A CartesianProduct operator is present; "
+                    "output size depends on input cardinalities."
                 ),
                 recommendation=(
-                    "Confirm the cross join is intentional. "
-                    "Review expected output cardinality and "
-                    "consider an appropriate join condition "
-                    "if the operation is unintended."
+                    "Verify that the cross join is intentional "
+                    "and check expected output cardinality."
                 ),
             )
         )
@@ -160,15 +179,13 @@ def analyze_physical_plan(
                 severity="MEDIUM",
                 title="Broadcast nested-loop join detected",
                 description=(
-                    "Spark plans a BroadcastNestedLoopJoin. "
-                    "This can be costly for some input sizes "
-                    "and non-equality join conditions."
+                    "A BroadcastNestedLoopJoin is planned, "
+                    "potentially expensive for some input sizes "
+                    "and non-equality joins."
                 ),
                 recommendation=(
-                    "Review the join condition, estimated "
-                    "cardinalities, and physical plan. "
-                    "Compare alternative strategies when "
-                    "appropriate."
+                    "Review join conditions, input cardinalities, "
+                    "and runtime metrics before changing strategy."
                 ),
             )
         )
@@ -180,14 +197,34 @@ def analyze_physical_plan(
                 severity="LOW",
                 title="Sort-merge join observed",
                 description=(
-                    "The physical plan contains a SortMergeJoin. "
-                    "This is a common Spark join strategy and "
-                    "is not inherently inefficient."
+                    "SortMergeJoin is a normal Spark join "
+                    "strategy, not inherently inefficient."
                 ),
                 recommendation=(
-                    "Inspect exchange and sort operators, "
-                    "table statistics, and runtime metrics "
-                    "before considering another join strategy."
+                    "Examine actual shuffle and sort costs "
+                    "before considering another strategy."
+                ),
+            )
+        )
+
+    if (
+        counts.get("BatchEvalPython", 0)
+        or counts.get("ArrowEvalPython", 0)
+    ):
+        findings.append(
+            Finding(
+                rule_id="PLAN_PYTHON_EVALUATION",
+                severity="LOW",
+                title="Python evaluation operator observed",
+                description=(
+                    "The plan includes a Python evaluation "
+                    "operator; performance impact is "
+                    "workload-dependent."
+                ),
+                recommendation=(
+                    "Compare built-in Spark SQL functions "
+                    "with the current Python logic where "
+                    "practical, then benchmark."
                 ),
             )
         )

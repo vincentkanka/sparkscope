@@ -85,10 +85,22 @@ class SparkReport:
                 for name, count in sorted(operators.items()):
                     print(f"{name}: {count}")
 
-            print(
-                "Adaptive Plan: "
-                f"{self.plan_summary.is_adaptive}"
-            )
+            print(f"Adaptive Plan: {self.plan_summary.is_adaptive}")
+
+            if self.plan_summary.is_final_plan is not None:
+                print(
+                    f"Final Adaptive Plan: "
+                    f"{self.plan_summary.is_final_plan}"
+                )
+
+            if (
+                self.plan_summary.is_adaptive
+                and self.plan_summary.is_final_plan is False
+            ):
+                print(
+                    "Note: AQE may change the execution strategy "
+                    "when the query runs."
+                )
 
             print(
                 "Note: Operator counts describe a planned "
