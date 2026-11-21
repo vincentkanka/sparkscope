@@ -2,34 +2,56 @@
 from typing import Any
 
 from sparkscope.analyzer import analyze_config
+from sparkscope.plan_analyzer import (
+    analyze_physical_plan,
+    collect_physical_plan,
+    summarize_plan,
+)
 from sparkscope.report import SparkReport
 from sparkscope.spark_collector import collect_spark_config
 
 
-def analyze(spark: Any) -> SparkReport:
+def analyze(
+    spark: Any,
+    dataframe: Any | None = None,
+) -> SparkReport:
     """
-    Analyze the configuration of an existing SparkSession.
+    Analyze SparkSession configuration and, optionally,
+    a DataFrame physical execution plan.
 
-    The analysis is read-only. It does not change Spark
-    configuration, execute DataFrame actions, or submit jobs.
+    No DataFrame actions are executed by SparkScope.
 
     Parameters
     ----------
     spark:
-        A classic PySpark SparkSession.
+        An existing classic PySpark SparkSession.
+
+    dataframe:
+        Optional PySpark DataFrame whose planned physical
+        execution operators should be inspected.
 
     Returns
     -------
-    SparkReport:
-        Structured report containing configuration findings.
+    SparkReport
+        Combined configuration and physical-plan findings.
     """
     snapshot = collect_spark_config(spark)
 
     findings = analyze_config(snapshot.config)
+    plan_summary = None
+
+    if dataframe is not None:
+        plan_text = collect_physical_plan(dataframe)
+        plan_summary = summarize_plan(plan_text)
+
+        findings.extend(
+            analyze_physical_plan(plan_summary)
+        )
 
     return SparkReport(
         spark_version=snapshot.spark_version,
         config=dict(snapshot.config),
         sources=dict(snapshot.sources),
         findings=findings,
+        plan_summary=plan_summary,
     )

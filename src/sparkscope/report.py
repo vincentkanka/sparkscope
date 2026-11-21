@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sparkscope.models import Finding
+from sparkscope.plan_analyzer import PlanSummary
 
 
 SEVERITY_ORDER = {
@@ -18,6 +19,7 @@ class SparkReport:
     config: dict[str, str]
     findings: list[Finding] = field(default_factory=list)
     sources: dict[str, str] = field(default_factory=dict)
+    plan_summary: PlanSummary | None = None
 
     @property
     def total_findings(self) -> int:
@@ -37,7 +39,7 @@ class SparkReport:
         return counts
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "spark_version": self.spark_version,
             "config": dict(self.config),
             "sources": dict(self.sources),
@@ -49,6 +51,13 @@ class SparkReport:
             ],
         }
 
+        if self.plan_summary is not None:
+            result["plan_summary"] = (
+                self.plan_summary.to_dict()
+            )
+
+        return result
+
     def show(self) -> None:
         print("\nSparkScope Performance Report")
         print("=" * 29)
@@ -57,17 +66,40 @@ class SparkReport:
         print(f"Total Findings: {self.total_findings}")
 
         counts = self.severity_counts
+
         print(
             f"Severity: HIGH={counts['HIGH']} | "
             f"MEDIUM={counts['MEDIUM']} | "
             f"LOW={counts['LOW']}"
         )
 
-        if not self.findings:
-            print("\nNo issues detected by the enabled rules.")
+        if self.plan_summary is not None:
+            print("\nPhysical Plan Summary")
+            print("-" * 21)
+
+            operators = self.plan_summary.operator_counts
+
+            if not operators:
+                print("No recognized operators detected.")
+            else:
+                for name, count in sorted(operators.items()):
+                    print(f"{name}: {count}")
+
             print(
-                "Note: This does not guarantee that "
-                "the workload is fully optimized."
+                "Adaptive Plan: "
+                f"{self.plan_summary.is_adaptive}"
+            )
+
+            print(
+                "Note: Operator counts describe a planned "
+                "execution strategy, not runtime cost."
+            )
+
+        if not self.findings:
+            print("\nNo findings detected by enabled rules.")
+            print(
+                "This does not guarantee that the "
+                "workload is fully optimized."
             )
             return
 
@@ -77,7 +109,13 @@ class SparkReport:
         )
 
         for index, finding in enumerate(ordered, start=1):
-            print(f"\n{index}. [{finding.severity}] {finding.title}")
+            print(
+                f"\n{index}. [{finding.severity}] "
+                f"{finding.title}"
+            )
             print(f"   Rule: {finding.rule_id}")
             print(f"   Description: {finding.description}")
-            print(f"   Recommendation: {finding.recommendation}")
+            print(
+                f"   Recommendation: "
+                f"{finding.recommendation}"
+            )
