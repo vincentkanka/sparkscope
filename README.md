@@ -1,80 +1,114 @@
 # SparkScope
 
-**A lightweight, open-source toolkit for reviewing Apache Spark and PySpark performance configurations and workload metadata.**
+**Explainable Apache Spark and PySpark configuration and execution-plan diagnostics.**
 
-SparkScope helps data engineers identify potentially inefficient settings and workload patterns, explain why they matter, and decide what to validate next. Its recommendations are **diagnostic heuristics**, not measured speedups or automatic fixes.
+SparkScope helps data engineers inspect selected Spark settings, analyze user-supplied table and join metadata, examine a DataFrame's planned physical operators, and compare two plans. Findings are **diagnostic observations and heuristics**, not measured performance improvements or automatic fixes.
 
-- **Latest public PyPI release:** `0.2.0`
-- **Next release in development:** `0.3.0` — read-only inspection of a classic PySpark `SparkSession`, a simple Python API, and structured reporting
-- **Repository:** https://github.com/vincentkanka/sparkscope
-- **PyPI:** https://pypi.org/project/sparkscope/
+- **Release:** v0.4.0
+- **Python:** 3.11+
+- **Source:** https://github.com/vincentkanka/sparkscope
+- **Package:** https://pypi.org/project/sparkscope/
 - **License:** Apache-2.0
 
-## Why SparkScope?
+## Features
 
-Spark performance tuning depends on data distribution, SQL plans, cluster resources, runtime settings, and workload characteristics. SparkScope provides a repeatable starting point for reviewing selected settings and manually supplied workload metadata. It **does not** currently measure job execution time, parse Spark event logs, or prove that a suggested change will improve performance.
-
-## Capabilities and release status
-
-| Capability | Published v0.2.0 | v0.3.0 development branch |
-| --- | --- | --- |
-| Analyze Spark configuration JSON | Yes | Yes — validation and missing-value handling improved |
-| Analyze table/join metadata JSON | Yes | Yes — broadcast guidance is join-type-aware |
-| Identify potential broadcast candidates | Yes — size heuristic | Yes — also checks allowable join build sides and supplied equi-join keys |
-| Flag large tables without supplied partition columns | Yes | Yes |
-| Warn on join-key/partition-column mismatch | Yes | Removed; it does not establish that a shuffle occurs |
-| Inspect a running classic PySpark `SparkSession` | No | Yes — selected settings only |
-| `from sparkscope import analyze` | No | Yes |
-| `SparkReport.show()` and `SparkReport.to_dict()` | No | Yes |
-| Execution-plan analysis | No | No |
-| Event-log analysis, skew detection, shuffle metrics | No | No |
-| HTML report or web UI | No | No |
-
-**Important:** The v0.3.0 API is currently development-branch functionality. Installing `sparkscope` from PyPI without additional steps installs the latest published release, which may not yet include this API.
-
-## Requirements
-
-- Python **3.11 or newer**
-- No PySpark dependency for the existing JSON-based CLI
-- For the v0.3.0 live-session API: classic PySpark and an appropriately configured Java runtime
-- Spark Connect-only sessions are not yet supported by the collector
+| Capability | Available in v0.4.0 |
+| --- | --- |
+| Analyze Spark configuration JSON | Yes |
+| Analyze supplied table and join metadata JSON | Yes |
+| Inspect selected settings in a classic PySpark `SparkSession` | Yes |
+| Report findings with severity and rule IDs | Yes |
+| Inspect recognized DataFrame physical-plan operators | Yes |
+| Show preliminary AQE final-plan status | Yes |
+| Compare operator counts and finding changes between two reports | Yes |
+| Run workloads or measure execution time | No |
+| Parse event logs, task metrics, or quantify data skew | No |
+| Automatically fix workloads or prove performance speedups | No |
+| Support Spark Connect-only sessions | No |
 
 ## Installation
 
-### Latest published release — JSON CLI
+For configuration and workload-metadata JSON analysis, PySpark is not required:
 
 ```bash
-python -m pip install sparkscope
-sparkscope --help
+python -m pip install 'sparkscope==0.4.0'
 ```
 
-### v0.3.0 development branch — SparkSession analysis
-
-Until v0.3.0 is published to PyPI, install directly from the development branch:
+For classic PySpark session and DataFrame analysis:
 
 ```bash
-python -m pip install \
-  'git+https://github.com/vincentkanka/sparkscope.git@feature/reliable-config-rules#egg=sparkscope[spark]'
+python -m pip install 'sparkscope[spark]==0.4.0'
 ```
 
-For local development from a clone of that branch:
+The Spark extra declares `pyspark>=3.5,<5`. Running local Spark also requires an appropriate Java runtime. Declared dependency compatibility does not mean every Spark/Java combination has been individually tested.
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[dev,spark]'
+## Quick start: configuration inspection
+
+```python
+from pyspark.sql import SparkSession
+from sparkscope import analyze
+
+spark = SparkSession.builder.master('local[2]').appName('SparkScopeDemo').getOrCreate()
+try:
+    report = analyze(spark)
+    report.show()
+    payload = report.to_dict()
+finally:
+    spark.stop()
 ```
 
-Once v0.3.0 has been released and its optional dependency is verified, the intended installation command will be:
+SparkScope reads a small allowlist of configuration keys: `spark.sql.adaptive.enabled`, `spark.sql.shuffle.partitions`, `spark.executor.cores`, and `spark.serializer`, when available. Missing settings are not assumed to be disabled. It does not collect arbitrary Spark configuration entries.
 
-```bash
-python -m pip install 'sparkscope[spark]>=0.3.0'
+## Quick start: inspect a DataFrame plan
+
+```python
+from pyspark.sql import SparkSession
+from sparkscope import analyze
+
+spark = SparkSession.builder.master('local[2]').appName('SparkScopePlanDemo').getOrCreate()
+try:
+    left = spark.range(100).selectExpr('id AS customer_id')
+    right = spark.range(10).selectExpr('id AS customer_id')
+    joined = left.join(right, 'customer_id')
+
+    report = analyze(spark, dataframe=joined)
+    report.show()
+    print(report.plan_summary.to_dict() if report.plan_summary else None)
+finally:
+    spark.stop()
 ```
 
-## Usage
+The plan collector captures `DataFrame.explain(mode="simple")`. It recognizes selected physical operators, including `SortMergeJoin`, `BroadcastHashJoin`, `ShuffledHashJoin`, `BroadcastNestedLoopJoin`, `CartesianProduct`, `Exchange`, `BroadcastExchange`, `ReusedExchange`, `AQEShuffleRead`, `BatchEvalPython`, and `ArrowEvalPython`.
 
-### 1. Analyze Spark configuration JSON (v0.2.0 and later)
+Diagnostic findings may flag Cartesian products, broadcast nested-loop joins, or Python evaluation operators for investigation. A sort-merge join is reported as an observation, not inherently a problem. An `Exchange` is counted but is not treated as inefficient by itself.
+
+**Plan limitations:** Plan output is not a stable public machine-readable schema. Operator recognition is based on simple explain-text parsing; the number of operators is not a runtime measurement. Adaptive Query Execution may change the final plan. Inspect plans and compare versions carefully before drawing performance conclusions.
+
+## Quick start: compare two plans
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import broadcast
+from sparkscope import analyze, compare
+
+spark = SparkSession.builder.master('local[2]').appName('SparkScopeCompareDemo').getOrCreate()
+try:
+    large = spark.range(10000).selectExpr('id AS customer_id')
+    small = spark.range(100).selectExpr('id AS customer_id')
+
+    before = analyze(spark, dataframe=large.join(small, 'customer_id'))
+    after = analyze(spark, dataframe=large.join(broadcast(small), 'customer_id'))
+
+    result = compare(before, after)
+    result.show()
+    print(result.to_dict())
+finally:
+    spark.stop()
+```
+
+`compare()` operates on two existing SparkScope reports. It reports recognized operator-count deltas, new/resolved rule findings, and cautions when Spark versions, selected settings, or adaptive-plan status affect comparability. Identical counts **do not** mean the plan trees are identical; changed counts **do not** demonstrate faster execution.
+
+## CLI: configuration JSON
 
 Create `spark_config.json`:
 
@@ -93,9 +127,7 @@ Run:
 sparkscope analyze spark_config.json
 ```
 
-The terminal report includes severity, rule ID, description, and recommendation. For this sample, rules may flag disabled AQE, a potentially excessive shuffle partition count, executor cores, and Java serialization. **The exact severities differ between published v0.2.0 and the improved v0.3.0 branch.**
-
-### 2. Analyze table and join metadata JSON (v0.2.0 and later)
+## CLI: workload metadata JSON
 
 Create `workload.json`:
 
@@ -132,147 +164,49 @@ Run:
 sparkscope analyze-workload workload.json
 ```
 
-The analyzer uses **user-supplied metadata**; it does not fetch table sizes or infer actual join strategies from Spark. Its broadcast screening threshold is a heuristic, not a safe memory limit. Verify findings against a physical plan and real workload measurements.
+Workload findings rely on **supplied metadata** rather than live table statistics. Broadcast heuristics depend on join type, supported build side, join keys, and approximate sizes; they are not recommendations to force a broadcast without further validation.
 
-Repository examples are also available at `examples/sample_config.json` and `examples/sample_workload.json`.
+## Reports
 
-### 3. Analyze a running SparkSession (v0.3.0 development only)
+`SparkReport` provides `show()`, `to_dict()`, `total_findings`, `severity_counts`, and an optional `plan_summary`. `PlanComparison` provides `show()`, `to_dict()`, `operator_changes`, `added_findings`, `resolved_findings`, `warnings`, and `has_changes`.
 
-Install the development version with the optional `spark` extra as described above, then:
-
-```python
-from pyspark.sql import SparkSession
-from sparkscope import analyze
-
-spark = (
-    SparkSession.builder
-    .master("local[2]")
-    .appName("SparkScopeExample")
-    .getOrCreate()
-)
-
-try:
-    report = analyze(spark)
-    report.show()
-
-    print(report.severity_counts)
-    print(report.total_findings)
-
-    # JSON-compatible Python dictionary
-    payload = report.to_dict()
-finally:
-    spark.stop()
-```
-
-The v0.3.0 collector reads only the following settings when accessible:
-
-- `spark.sql.adaptive.enabled`
-- `spark.sql.shuffle.partitions`
-- `spark.executor.cores`
-- `spark.serializer`
-
-It includes the Spark version and records whether a setting came from `spark.conf` or the SparkContext configuration snapshot. It does **not** trigger DataFrame actions, modify Spark settings, or scan application data. Some settings may be absent from the collected snapshot; absence should not be interpreted as proof of a disabled feature.
-
-### Report structure (v0.3.0 development)
-
-`SparkReport` exposes:
-
-| Field or method | Meaning |
-| --- | --- |
-| `spark_version` | Reported Spark version |
-| `config` | Collected, selected Spark settings |
-| `sources` | Where each setting was read from |
-| `findings` | List of rule findings |
-| `total_findings` | Number of findings |
-| `severity_counts` | Counts for HIGH, MEDIUM, LOW |
-| `show()` | Prints a readable terminal report |
-| `to_dict()` | Returns a JSON-compatible dictionary |
-
-To write a local JSON report in Python:
+To serialize a report or comparison:
 
 ```python
 import json
 
-with open("sparkscope-report.json", "w", encoding="utf-8") as handle:
+with open('sparkscope-report.json', 'w', encoding='utf-8') as handle:
     json.dump(report.to_dict(), handle, indent=2)
 ```
 
-Review exported settings before sharing reports; configuration values may reveal environment details.
-
-## Current rule categories
-
-### Configuration rules
-
-- Adaptive Query Execution: explicitly disabled or invalid setting
-- Shuffle partitions: invalid count or a potentially high/low value
-- Executor cores: invalid count or a potentially high value
-- Serialization: explicitly configured Java serializer versus Kryo
-
-In the v0.3.0 branch, missing settings are no longer automatically treated as disabled or improperly configured. Threshold-based warnings are intentionally phrased as candidates for investigation.
-
-### Workload metadata rules
-
-- Potential broadcast candidates when supplied table sizes and join type permit consideration
-- Large tables lacking supplied storage partition columns
-- Missing join-key metadata for applicable join types (v0.3.0 branch)
-
-A storage partition-column mismatch alone is **not** reliable evidence of a shuffle. The former mismatch rule is being removed in v0.3.0.
+Review any exported report before sharing: selected settings, finding descriptions, and plan-derived information may disclose environment details.
 
 ## Development and testing
 
 ```bash
 git clone https://github.com/vincentkanka/sparkscope.git
 cd sparkscope
-git switch feature/reliable-config-rules
-
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev,spark]'
-
 python -m pytest -v
 sparkscope analyze examples/sample_config.json
 sparkscope analyze-workload examples/sample_workload.json
-python examples/live_analysis.py
+python examples/live_plan_analysis.py
+python examples/compare_join_plans.py
 ```
 
-The live Spark example requires a compatible Java runtime. Run real integration tests on supported environments before claiming compatibility with any particular Spark/Java combination.
+Spark integration tests require a functioning local Spark and Java installation. Read-only `analyze()` inspects configuration and physical-plan text; it does not invoke DataFrame actions, although Spark planning can consult metadata or initialize Spark components. The project does not guarantee zero external side effects in every Spark deployment.
 
 ## Roadmap
 
-### v0.1.0 — Initial configuration analyzer (released)
+- **v0.1.0:** Initial configuration analyzer.
+- **v0.2.0:** Table/join workload metadata analysis.
+- **v0.3.0:** Automatic classic SparkSession configuration inspection and structured Python API.
+- **v0.3.1:** Documentation and package-metadata patch.
+- **v0.4.0:** Physical-plan observations and before/after report comparison.
+- **Future releases:** Opt-in runtime benchmarks; stronger parser and Spark-version compatibility validation; agent skills/MCP integration; possible task/event-log analysis.
 
-Basic JSON configuration rules, terminal findings, CLI, tests, and examples.
+## Feedback and contributions
 
-### v0.2.0 — Workload metadata analyzer (released)
-
-Table/join metadata models, broadcast-candidate screening, large-unpartitioned-table warnings, initial partition/join metadata checks, and the `analyze-workload` CLI.
-
-### v0.3.0 — Automatic SparkSession analysis (in development)
-
-More reliable configuration and join rules, read-only SparkSession collection, the `analyze(spark)` API, structured reports, and real local Spark integration tests.
-
-### v0.4.0 — Proposed execution-plan inspection
-
-Investigate read-only physical-plan inspection for DataFrames, plan-aware join recommendations, and evidence-based shuffle diagnostics. Scope and compatibility remain to be validated.
-
-### Future (not implemented)
-
-Spark event-log parsing; stage/task/skew and shuffle metrics; HTML reports; historical comparisons; configurable policies; reproducible performance benchmarks.
-
-## Design principles and limitations
-
-1. **Evidence over guesses.** A rule suggests what to investigate; it does not establish a performance improvement.
-2. **No surprise execution.** Live configuration inspection does not run a Spark job.
-3. **Minimal collection.** Read only selected settings required for current checks.
-4. **Explainable findings.** Findings include descriptions and validation-oriented recommendations.
-5. **Backward compatibility.** The existing JSON CLI continues to work.
-
-SparkScope is experimental software. It is not a substitute for the Spark UI, physical plans, job metrics, or representative benchmarks. In particular, current SparkScope versions do not detect actual data skew, quantify shuffle overhead, provide trustworthy percentage speedup estimates, or optimize a pipeline automatically.
-
-## Contributing
-
-Bug reports, accurate rule proposals, reproducible workloads, tests, and documentation improvements are welcome. Please review [CONTRIBUTING.md](CONTRIBUTING.md) and open an [issue](https://github.com/vincentkanka/sparkscope/issues) before proposing major changes.
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE).
+Bugs, reproducible plan examples, and feedback are welcome through [GitHub Issues](https://github.com/vincentkanka/sparkscope/issues). Please redact credentials and sensitive query or data details from uploaded plans and reports.

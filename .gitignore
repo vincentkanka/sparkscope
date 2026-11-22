@@ -219,3 +219,6 @@ __marimo__/
 
 # Report
 sparkscope-report.json
+
+# Compare
+sparkscope-comparison.json

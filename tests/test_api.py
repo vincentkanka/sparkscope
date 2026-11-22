@@ -144,3 +144,57 @@ def test_report_does_not_collect_unrelated_settings():
 
     assert "spark.sql.warehouse.dir" not in report.config
     assert report.sources["spark.sql.adaptive.enabled"] == "spark.conf"
+
+
+def test_analyze_with_dataframe_includes_plan_summary():
+    class FakeDataFrame:
+        def explain(self, mode="simple"):
+            print(
+                "== Physical Plan ==\n"
+                "+- CartesianProduct\n"
+            )
+
+    spark = FakeSparkSession(
+        sql_config={
+            "spark.sql.adaptive.enabled": "true",
+            "spark.sql.shuffle.partitions": "200",
+        }
+    )
+
+    report = analyze(
+        spark,
+        dataframe=FakeDataFrame(),
+    )
+
+    assert report.plan_summary is not None
+
+    assert report.plan_summary.operator_counts[
+        "CartesianProduct"
+    ] == 1
+
+    rule_ids = {
+        finding.rule_id
+        for finding in report.findings
+    }
+
+    assert "PLAN_CARTESIAN_PRODUCT" in rule_ids
+
+    payload = report.to_dict()
+
+    assert (
+        payload["plan_summary"]["operator_counts"]
+        ["CartesianProduct"] == 1
+    )
+
+
+def test_existing_api_remains_backward_compatible():
+    spark = FakeSparkSession(
+        sql_config={
+            "spark.sql.adaptive.enabled": "true",
+        }
+    )
+
+    report = analyze(spark)
+
+    assert report.plan_summary is None
+    assert "plan_summary" not in report.to_dict()
