@@ -1,7 +1,7 @@
 [project]
 name = "sparkscope"
-version = "0.3.0"
-description = "Open-source PySpark performance analysis toolkit"
+version = "0.4.0"
+description = "Explainable Apache Spark and PySpark configuration, execution-plan analysis, and plan comparison toolkit"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
