@@ -85,3 +85,44 @@ def test_plan_analysis_does_not_execute_rows(spark):
 
     assert report.plan_summary is not None
     assert report.spark_version == spark.version
+
+
+def test_compare_real_join_plans(spark):
+    from pyspark.sql.functions import broadcast
+    from sparkscope import compare
+
+    left = spark.range(10000).selectExpr(
+        "id AS join_id"
+    )
+
+    right = spark.range(100).selectExpr(
+        "id AS join_id"
+    )
+
+    original = left.join(
+        right,
+        on="join_id",
+    )
+
+    with_broadcast = left.join(
+        broadcast(right),
+        on="join_id",
+    )
+
+    before = analyze(spark, dataframe=original)
+    after = analyze(spark, dataframe=with_broadcast)
+
+    result = compare(before, after)
+
+    assert result.before_spark_version == spark.version
+    assert result.after_spark_version == spark.version
+
+    assert after.plan_summary is not None
+
+    assert (
+        after.plan_summary.operator_counts.get(
+            "BroadcastHashJoin", 0
+        ) >= 1
+    )
+
+    assert isinstance(result.to_dict(), dict)
